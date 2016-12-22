@@ -1,0 +1,149 @@
+This file contains a brief description about my implementation and example of outputs from the program.
+
+This folder contains the following files:
+	- Makefile: This file contains the appropriate commands to build the program.
+
+	In order to build and run the program, steps are:
+		- Deleting the previous executable files by "make clean" command.
+		- Compiling and Building the program by "make" command. it will generate an executable file, called "pbproxy".
+		- Running the program as follows:
+			- [Assumption-0] openssl library has been installed on server and client sides (by command "apt-get install libssl-dev"). Also, ssh has been installed too (by the command "sudo apt-get install openssh-server").
+			- [Assumption-1] sshd is running on the server side.
+			- [Assumption-2] making and building the program should take place on all the machines involved in the test (at least on two machines of ssh-client and ssh-server), by running the command "make".
+			
+			- First generating the key, by the command "./pbproxy -k mykey".
+
+			- Second, running the server side of the proxy by the command "./pbproxy -k mykey -l 2222 localhost 22". By this command, the server is reading the key file, named mykey, listening to the port 2222 and in case of any request for connection (from the client side of the proxy program), it will connect to the sshd which is up on localhost of the machine where server side of the proxy is running, on port 22.
+
+			- Third, on the proxy client side, copying the executable file to the /usr/bin by the command "sudo cp ./pbproxy /usr/bin/" and also the shared key file, named mykey.
+
+			- Fourth, running the client side of the proxy by the command "ssh -o "ProxyCommand pbproxy -k KEY_DIRECTORY/mykey SERVER-HOSTNAME 2222" localhost", where KEY_DIRECTORY is the address of the folder where you put the mykey file (and this file should be the same as the mykey file, used in the server side of the proxy). Also, SERVER-HOSTNAME is the hostname of the computer/machine which you are running the server side of the proxy program. If you want to test this program on virtual machines, on the client machine, you need to add a line which maps the SERVER-HOSTNAME with the ip-address (e.g,. 192.168.56.101  Server) to the /etc/hosts file. Anyways, by this command, the ssh-client is connecting to the local sshd (due to the existance of localhost at the end of the command after "ProxyCommand ..." part). However, local sshd rather than executing the commands, it will execute the client side of the proxy program (which is determined in the ProxyCommand "./pbproxy -k KEY_DIRECTORY/mykey SERVER-HOSTNAME 2222"). So, from now on, the client side of the proxy will connect to the server-side of the proxy and relays the messages between the server side of the proxy and std-out/std-in buffers. In otherwords, we have such test environment:
+
+				ssh <--stdin/stdout--> pbproxy-client <--socket 1--> pbproxy-server <--socket 2--> sshd
+				\___________________________________/                \_______________________________/
+             					client                                               server    
+
+    - encryption.h file contains the necessary functions for encryption and decryption. It contains the following functions:
+    	- int read_AES_BLOCK_SIZE(char *from, char *to, int totalFromSize, int startFrom):
+
+		This function reads AES_BLOCK_SIZE from the character array 'from' and puts it in character array 'to', starting its reading from 'startFrom' parameter. This function is used in both encryption and decryption functions.
+
+    	- int encrypt(char * keyfileName, unsigned char * iv, struct ctr_state * enc_state,	char * inputBuffer, int inputBufferSize , char * outputBuffer):
+
+    	This function gets the character array inputBuffer, encrypts it (by reading repeatedly AES_BLOCK_SIZE from the buffer and encrypt it using AES_ctr128_encrypt(...) function) and puts the encrypted character array in ouputBuffer. In order to encrypt, the function uses the two other arguments (unsigned character array iv and the keyfile generated which was some random bytes). Anyways, in normal cases, it returns the number of characters encrypted and in un-usual cases, it returns -1.
+
+    	- int decrypt(char * keyfileName, unsigned char * iv, struct ctr_state * dec_state,	char * inputBuffer, int inputBufferSize , char * outputBuffer):
+
+    	This function does, just the reverse of the previous function. It gets the encrypted character array inputBuffer, decrypts it (by reading repeatedly AES_BLOCK_SIZE from the buffer and decrypt it using AES_ctr128_encrypt(...), of course with different arguments passed to this function) and puts the decrypted character array in outputBuffer. In order to decrypt, the function uses the two other arguments (unsigned character array iv and the keyfile generated which was some random bytes). Anyways, in normal cases, it returns the number of characters decrypted and in un-usual cases, it returns -1.
+
+	NOTE: source to learn about the encryption/decryption was: http://www.gurutechnologies.net/blog/aes-ctr-encryption-in-c/
+
+    - relay.h file contains the facility of relaying the message from one buffer/socket to another buffer/socket. It also has the common functionalities used in the client and server sides of the proxy (such as converting the hostname to ip). It contains the following functions:
+
+    	- int hostname_to_ip(char * hostname , char* ip):
+
+    	This function reads the hostname and gets its ip address (by using the function gethostbyname()).
+
+    	- void relay(int from, int to, int encrypt_decrypt, char *iv, char *keyFileName, struct ctr_state *enc_dec_state):
+
+		This function reads from 'from' buffer/socket encrypts or decrypts (based on the parameter encrypt_decrypt) it and writes to 'to' buffer/socket.
+
+	- client.h file contains the functions regarding the client side of the proxy. It has the following functions:
+		- void client(char *serverURL, int serverPort, char *keyFileName):
+
+		This function does the following steps:
+			- converts the server-URL (passed as a parameter to this function) to the server-IP (here, server, I mean the server-side of the proxy)
+			- Make a socket to connect to the server-side of the proxy
+			- It connects to the server side of the proxy
+			- it initializes the iv_client (used for encryption purposes in funtion relay) and sends it to the server-side of the proxy (for decryption purposes on the server-side of the proxy)
+			- it receives the iv_server (for decryption purposes)
+			- It makes a new thread, called serverToSTDOUT_thread, in which function serverToSTDOUT is called which (decrypts and) relays all the messages from server side of the proxy to std-out
+			- After spawning the thread for the previous step, it calls the function relay with STD_IN as the 'from' buffer and server-socket as the 'to' buffer. By this function call, the client program (encrypts and) relays all the data from std-in to the server-side of the proxy.
+
+		- void *serverToSTDOUT(void *threadArg):
+
+		This function is used when spawning new thread in order to (decrypt and) relay the all the messages from server side of the proxy to std-out. After extracting the required arguments from threadArg, it calls the function relay.
+
+	- server.h file contains the functions regarding the server side of the proxy. It has the following functions:
+		- void *clientToSshd(void *threadArg):
+
+		This function is used when spawning new thread in order to (decrypt and) relay all the messages from the client side of the proxy to the sshd. After extracting the required arguments from threadArg, it calls the function relay.
+
+		- void *connection_handler(void *threadArg)
+
+		This function gets called (in a new thread), per proxy-client connection request. It does the following steps:
+
+			- It gets the ip address of the sshd (ssh-server) to connect to.
+			- It makes a socket to connect to the sshd (ssh-server).
+			- It connects to the sshd (ssh-server).
+			- It initializes the iv_server (to be used for encryption/decryption) and sends it to the client side of the proxy.
+			- It gets the iv_client from the client side of the proxy.
+			- It makes a new thread, called clientToSshd_thread, in which function clientToSshd is called which (decrypts and) relays all the messages from client side of the proxy to the sshd.
+			- After spawning the thread for the previous step, it calls the function relay with sshdSocket as the 'from' buffer/socket and client-socket as the 'to' buffer/socket. By this function call, the server program (encrypts and) relays all the data from the sshd to the client side of the proxy.
+
+
+Sample Execution:
+	two clients are trying to connect to the server:
+	
+	Server-terminal [NOTE: since in the server side, there are two relays (one for client to sshd and one for sshd to client), for each connection-close, ther will be two printf of "relay:: connection is closed." That's is why in the following example, after "exit" from each client, there are two printf of "relay:: connection is closed."]:
+
+	ubuntu1@ubuntu1-VirtualBox:~/Desktop/project$ ./pbproxy -k mykey
+	ubuntu1@ubuntu1-VirtualBox:~/Desktop/project$ sudo cp ./pbproxy /usr/bin/
+	[sudo] password for ubuntu1: 
+	ubuntu1@ubuntu1-VirtualBox:~/Desktop/project$ ./pbproxy -k mykey -l 2222 localhost 22
+	server:: Connection request has been received.
+	server:: Connection request has been received.
+	relay:: connection is closed.
+	relay:: connection is closed.
+	relay:: connection is closed.
+	relay:: connection is closed.
+	----------------------------------------------------------------------------------
+	Client #1-terminal:
+
+		ubuntu1@ubuntu1-VirtualBox:~/Desktop/project$ ssh -o "ProxyCommand pbproxy -k /home/ubuntu1/Desktop/project/mykey localhost 2222" localhost
+		ubuntu1@localhost's password: 
+		Welcome to Ubuntu 12.04.2 LTS (GNU/Linux 3.5.0-23-generic i686)
+
+		 * Documentation:  https://help.ubuntu.com/
+
+		524 packages can be updated.
+		305 updates are security updates.
+
+		New release '14.04.4 LTS' available.
+		Run 'do-release-upgrade' to upgrade to it.
+
+		Last login: Thu Mar 31 19:31:12 2016 from ubuntu2-virtualbox.local
+		ubuntu1@ubuntu1-VirtualBox:~$ ls
+		Desktop    Downloads         Music     Public     Videos
+		Documents  examples.desktop  Pictures  Templates
+		ubuntu1@ubuntu1-VirtualBox:~$ cd Desktop/
+		ubuntu1@ubuntu1-VirtualBox:~/Desktop$ ls
+		project
+		ubuntu1@ubuntu1-VirtualBox:~/Desktop$ exit
+		logout
+		Connection to localhost closed.
+	
+	----------------------------------------------------------------------------------
+	Client #2-terminal:
+		
+		ubuntu1@ubuntu1-VirtualBox:~/Desktop/project$ ssh -o "ProxyCommand pbproxy -k /home/ubuntu1/Desktop/project/mykey localhost 2222" localhost
+		ubuntu1@localhost's password: 
+		Welcome to Ubuntu 12.04.2 LTS (GNU/Linux 3.5.0-23-generic i686)
+
+		 * Documentation:  https://help.ubuntu.com/
+
+		524 packages can be updated.
+		305 updates are security updates.
+
+		New release '14.04.4 LTS' available.
+		Run 'do-release-upgrade' to upgrade to it.
+
+		Last login: Fri Apr  8 17:12:15 2016 from localhost
+		lubuntu1@ubuntu1-VirtualBox:~$ ls
+		Desktop    Downloads         Music     Public     Videos
+		Documents  examples.desktop  Pictures  Templates
+		ubuntu1@ubuntu1-VirtualBox:~$ exit
+		logout
+		Connection to localhost closed.
+
+	==================================================================================
